@@ -8,19 +8,19 @@ app.use(cors())
 app.get('/',(req,res)=>{
     res.send('Welcome to chatdpt!')
 })
-app.post('/chat',async(req,res)=>{
-  const {message , threadId} = req.body;
-  //todo: validate above fields
+app.post("/chat-stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
 
-   if(!message || ! threadId){
-     return res.status(400).json({message:"All fields are required"})
-   }
-  const result = await generate(message, threadId)
-  res.json({message:result})
+  const { message, threadId } = req.body;
 
+  await generate(message, threadId, (chunk) => {
+    res.write(`data: ${chunk}\n\n`);
+  });
 
-
-})
+  res.end();
+});
 app.listen(port,()=>{
     console.log("App running at port 3000")
 })

@@ -4,63 +4,79 @@ const askBtn = document.querySelector('#ask')
 input.addEventListener('keyup', handleEnter)
 askBtn.addEventListener('click', handleAsk)
 const threadId = "vbc"
+
 const loading = document.createElement('div');
 loading.className = 'my-6 animate-pulse'
-loading.textContent='Thinking...'
+loading.textContent = 'Thinking...'
 
 
-async function generate(text){
-  /** append msg to ui */
-  /* send it to llm */
-  /*Append response to ui */
+async function generate(text) {
+  /** UI: user message */
   const msg = document.createElement('div')
   msg.className = `my-6 bg-neutral-800 p-3 rounded-xl ml-auto max-w-fit`
   msg.textContent = text
   chatContainer?.appendChild(msg);
-  input.value='';
+  input.value = '';
+
+  /** Loading */
   chatContainer.appendChild(loading)
- 
-  const assistantmsg = await  callServer(text)
-  const res = document.createElement('div');
-    res.className = `max-w-fit`
-    res.textContent = assistantmsg.message
-    loading.remove();
-    chatContainer?.appendChild(res)
+
+  /** Get streaming response */
+  await callServerStream(text)
 }
 
-async function callServer(inputText){
-    const response = await fetch('http://localhost:3000/chat',{
-        method:'POST',
-        headers:{
-            'content-type':'application/json'
-        },
-        body: JSON.stringify({threadId , message:inputText})
-    })
-    if(!response.ok) {
-      throw new Error("Error generating the response")
+async function callServerStream(inputText) {
+
+  const response = await fetch("http://localhost:3000/chat-stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ threadId, message: inputText })
+  });
+
+  // ---- STREAM READER ----
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  let assistantDiv = document.createElement("div");
+  assistantDiv.className = "max-w-fit";
+  assistantDiv.textContent = "";
+  chatContainer.appendChild(assistantDiv);
+
+  loading.remove();
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value);
+    const lines = chunk.split("\n\n");
+
+   for (let line of lines) {
+        if (!line.startsWith("data:")) continue;
+
+        const data = line.replace("data: ", "");
+
+        if (data === "[DONE]") {
+            return;
+        }
+
+      
+        assistantDiv.textContent += data;
     }
-    const data  = await response.json();
-   return data
-    
-
+  }
 }
-function handleAsk(e){
+
+
+function handleAsk() {
+  const text = input.value.trim()
+  if (text) generate(text)
+}
+
+function handleEnter(e) {
+  if (e.key === 'Enter') {
     const text = input.value.trim()
-        if(!text){
-            return;
-        }
-        
-        generate(text)
-
-}
-function handleEnter(e){
-    if(e.key === 'Enter'){
-        const text = input.value.trim()
-        if(!text){
-            return;
-        }
-        generate(text)
-        console.log(text)
-    }
-    
+    if (text) generate(text)
+  }
 }

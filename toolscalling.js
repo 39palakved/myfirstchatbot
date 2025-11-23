@@ -7,9 +7,9 @@ console.log("welcome to genai");
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const Cache = new NodeCache({stdTTL:60*60*24}) // for 24 hours after 24 hours data will be deleted
+const Cache = new NodeCache({stdTTL:60*60*24})
 
-export async function generate(usermessage, threadId) {
+export async function generate(usermessage, threadId, onChunk) {
     const baseMessages = [
         {
             role: "system",
@@ -102,101 +102,102 @@ Assistant MUST use ragQuery:
 `
         }
     ];
-    const messages= Cache.get(threadId)??baseMessages;
-    messages.push({
-        role: "user",
-        content: usermessage
+    let messages = Cache.get(threadId) ?? baseMessages;
+
+  messages.push({
+    role: "user",
+    content: usermessage,
+  });
+
+  while (true) {
+    const stream = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0,
+      messages,
+      stream: true,
+      tool_choice: "auto",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "webSearch",
+            description: "Search internet",
+            parameters: {
+              type: "object",
+              properties: {
+                query: { type: "string" },
+              },
+              required: ["query"],
+            },
+          },
+        },
+        {
+          type: "function",
+          function: {
+            name: "ragQuery",
+            description: "Query internal KB",
+            parameters: {
+              type: "object",
+              properties: {
+                query: { type: "string" },
+              },
+              required: ["query"],
+            },
+          },
+        },
+      ],
     });
 
-    while (true) {
+    let toolCalls = [];
 
-        const completion = await groq.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
-            temperature: 0,
-            messages,
-            tool_choice: "auto",
-            tools: [
-                {
-                    type: "function",
-                    function: {
-                        name: "webSearch",
-                        description: "Search latest information on the internet",
-                        parameters: {
-                            type: "object",
-                            properties: {
-                                query: {
-                                    type: "string",
-                                    description: "The query to search"
-                                }
-                            },
-                            required: ["query"]
-                        }
-                    }
-                },
-                {
-                     type: "function",
-                     function: {
-                        name: "ragQuery",
-                        description: "Search information from internal PDF knowledge base using vector similarity",
-                        parameters: {
-                         type: "object",
-                         properties: {
-                         query: { type: "string" }
-                        },
-                     required: ["query"]
-            }
-        }
-                }
-            ]
-        });
+    // Read streaming chunks
+      for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta;
 
-        const msg = completion.choices[0].message;
-
-        messages.push({
-            role: msg.role,
-            content: msg.content ?? "",
-            tool_calls: msg.tool_calls
-        });
-
-        const toolCalls = msg.tool_calls;
-
-        
-        if (!toolCalls || toolCalls.length === 0) {
-            Cache.set(threadId,messages)
-            return msg.content;
-            
-        }
-
-    
-        for (const tool of toolCalls) {
-
-            const functionName = tool.function.name;
-            const args = JSON.parse(tool.function.arguments);
-
-            if (functionName === "webSearch") {
-                const tool_result = await webSearch(args);
-               
-                
-                messages.push({
-                    role: "tool",
-                    tool_call_id: tool.id,
-                    name: functionName,
-                    content: tool_result
-                });
-            }
-             if (functionName === "ragQuery") {
-               const tool_result = await ragQuery(args);
-
-               messages.push({
-               role: "tool",
-               tool_call_id: tool.id,
-               name: functionName,
-               content: tool_result
-               });
-            }
-        }
-    }
+      // SEND ONLY ONE CLEANED VERSION
+     if (delta?.content) {
+   onChunk(delta.content);
 }
 
+      if (delta?.tool_calls) {
+        toolCalls = delta.tool_calls;
+      }
+    }
+    // If tool calls detected → add to history
+    if (toolCalls.length > 0) {
+      messages.push({
+        role: "assistant",
+        tool_calls: toolCalls,
+      });
+    }
 
+    // If no tool calls → answer is complete
+    if (!toolCalls || toolCalls.length === 0) {
+      Cache.set(threadId, messages);
+      return; 
+    }
 
+    // Execute tools
+    for (const tool of toolCalls) {
+      const functionName = tool.function.name;
+      const args = JSON.parse(tool.function.arguments);
+
+      let result = "";
+
+      if (functionName === "webSearch") {
+        result = await webSearch(args);
+      }
+
+      if (functionName === "ragQuery") {
+        result = await ragQuery(args);
+      }
+
+      messages.push({
+        role: "tool",
+        tool_call_id: tool.id,
+        name: functionName,
+        content: result,
+      });
+    }
+  }
+}
